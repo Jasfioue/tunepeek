@@ -1,6 +1,7 @@
 // Tunepeek — мини-плеер поверх всех окон: показывает, что играет (YouTube/SoundCloud в браузере, Spotify... — всё, что видит медиа-панель Windows).
 // Видна только обложка; на новом треке название выезжает на 5 с. Навести на обложку — раскрыть.
 // ЛКМ по кнопкам — назад/пауза/вперёд, ЛКМ+тянуть — двигать, тянуть за край — размер, ПКМ — выход. Мимо панели клики проходят насквозь.
+// Значок «Вкусно — и точка» в углу — пасхалка: оранжевая тема и мем.
 // Первый запуск копирует exe в %LOCALAPPDATA%\Tunepeek и прописывает автозапуск.
 using System;
 using System.Diagnostics;
@@ -11,6 +12,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -61,6 +63,14 @@ class PlayerWindow : Window
     readonly Canvas content, buttons = new();
     readonly TextBlock title, artist, source, playBtn;
     readonly DispatcherTimer hideTimer = new();
+    // значок «Вкусно — и точка» в правом верхнем углу текста
+    const double LOGO = 16, LOGO_Y = 6, MEME_W = 236, MEME_H = 30;
+    const string MEME = "Я хочу вкусно и точка, понимаете?";
+    static readonly Color VK_GREEN = Color.FromRgb(0, 92, 51), VK_ORANGE = Color.FromRgb(255, 135, 33), VK_RED = Color.FromRgb(219, 41, 31);
+    static readonly Brush normalBg = new SolidColorBrush(Color.FromArgb(153, 33, 38, 48)), normalBorder = new SolidColorBrush(Color.FromArgb(26, 255, 255, 255));
+    readonly Popup meme = new() { AllowsTransparency = true, Placement = PlacementMode.Bottom, StaysOpen = true };
+    readonly DispatcherTimer memeTimer = new() { Interval = TimeSpan.FromMilliseconds(4000) };
+    bool vk;
     bool hover, busy;
     double scale = 1;
     Point? drag;
@@ -79,12 +89,34 @@ class PlayerWindow : Window
             TextTrimming = TextTrimming.CharacterEllipsis, Width = W - CW - PAD,
         };
         title = T(13, 1, FontWeights.Bold); artist = T(11, 0.65, FontWeights.Normal);
+        title.Width = W - CW - PAD - LOGO - 6;
         source = T(9, 0.35, FontWeights.Normal); source.TextAlignment = TextAlignment.Right;
         content = new Canvas { ClipToBounds = true, Margin = new Thickness(0, 0, CW, 0), Opacity = 0 };
         Canvas.SetLeft(title, PAD); Canvas.SetTop(title, 4);
         Canvas.SetLeft(artist, PAD); Canvas.SetTop(artist, 22);
         Canvas.SetLeft(source, PAD); Canvas.SetTop(source, 41);
         content.Children.Add(title); content.Children.Add(artist); content.Children.Add(source);
+        // упрощённый значок: зелёная плашка, две оранжевые полоски, красная точка
+        var logo = new Canvas { Width = LOGO, Height = LOGO, Background = Brushes.Transparent, Cursor = Cursors.Hand };
+        logo.Children.Add(new Border { Width = LOGO, Height = LOGO, CornerRadius = new CornerRadius(LOGO / 4), Background = new SolidColorBrush(VK_GREEN) });
+        foreach (var py in new[] { 0.27, 0.6 })
+        {
+            var bar = new Border { Width = LOGO * .4, Height = LOGO * .16, CornerRadius = new CornerRadius(LOGO * .08), Background = new SolidColorBrush(VK_ORANGE) };
+            Canvas.SetLeft(bar, LOGO * .17); Canvas.SetTop(bar, LOGO * py); logo.Children.Add(bar);
+        }
+        var dot = new System.Windows.Shapes.Ellipse { Width = LOGO * .3, Height = LOGO * .3, Fill = new SolidColorBrush(VK_RED) };
+        Canvas.SetLeft(dot, LOGO * .59); Canvas.SetTop(dot, LOGO * .35); logo.Children.Add(dot);
+        logo.MouseLeftButtonDown += (_, e) => { e.Handled = true; ToggleVk(); };
+        Canvas.SetLeft(logo, W - CW - LOGO - 2); Canvas.SetTop(logo, LOGO_Y); content.Children.Add(logo);
+        meme.PlacementTarget = this;
+        meme.Child = new Border
+        {
+            Width = MEME_W, Height = MEME_H, CornerRadius = new CornerRadius(10), IsHitTestVisible = false,
+            Background = new SolidColorBrush(VK_ORANGE), BorderBrush = new SolidColorBrush(VK_GREEN), BorderThickness = new Thickness(2),
+            Child = new TextBlock { Text = MEME, FontSize = 12, FontWeight = FontWeights.Bold, Foreground = Brushes.White,
+                                    HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center },
+        };
+        memeTimer.Tick += (_, _) => { memeTimer.Stop(); meme.IsOpen = false; };
         content.Children.Add(buttons);
         double x = PAD;
         foreach (var (glyph, act) in new (string, Func<Session, Task>)[] {
@@ -99,7 +131,7 @@ class PlayerWindow : Window
             x += 28;
         }
         panel = new Border { Width = CW, HorizontalAlignment = HorizontalAlignment.Right, CornerRadius = new CornerRadius(12),
-                             Background = new SolidColorBrush(Color.FromArgb(153, 33, 38, 48)), Child = content };
+                             Background = normalBg, BorderBrush = normalBorder, BorderThickness = new Thickness(1), Child = content };
         art = new Border { Width = ART, Height = ART, CornerRadius = new CornerRadius(8), Margin = new Thickness(PAD), Opacity = 0.9,
                            HorizontalAlignment = HorizontalAlignment.Right, Background = new SolidColorBrush(Color.FromArgb(20, 255, 255, 255)),
                            Child = new TextBlock { Text = "♪", FontSize = 20, Opacity = 0.5, Foreground = Brushes.White,
@@ -162,6 +194,20 @@ class PlayerWindow : Window
     {
         var x0 = (W - panel.ActualWidth) * scale;
         return p.X - x0 < EDGE ? 'l' : Width - p.X < EDGE ? 'r' : p.Y < EDGE ? 't' : Height - p.Y < EDGE ? 'b' : ' ';
+    }
+
+    void ToggleVk()
+    {
+        vk = !vk;
+        panel.Background = vk ? new SolidColorBrush(Color.FromArgb(235, VK_ORANGE.R, VK_ORANGE.G, VK_ORANGE.B)) : normalBg;
+        panel.BorderBrush = vk ? new SolidColorBrush(VK_GREEN) : normalBorder; panel.BorderThickness = new Thickness(vk ? 2 : 1);
+        art.BorderBrush = new SolidColorBrush(VK_GREEN); art.BorderThickness = new Thickness(vk ? 2 : 0);
+        memeTimer.Stop(); meme.IsOpen = false;
+        if (!vk) return;
+        // облачко под панелью, по правому краю
+        ((FrameworkElement)meme.Child).LayoutTransform = new ScaleTransform(scale, scale);
+        meme.HorizontalOffset = Width - MEME_W * scale; meme.VerticalOffset = 6 * scale;
+        meme.IsOpen = true; memeTimer.Start();
     }
 
     void SetScale(double s)

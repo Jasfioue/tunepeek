@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Tunepeek — мини-плеер поверх всех окон: показывает, что играет (YouTube/SoundCloud в браузере, Spotify, VLC... — всё, что говорит MPRIS).
 Видна только обложка; на новом треке название выезжает на 5 с. Навести на обложку — раскрыть.
-ЛКМ по кнопкам — назад/пауза/вперёд, ЛКМ+тянуть — двигать, тянуть за край — размер, ПКМ — выход. Мимо панели клики проходят насквозь.
+ЛКМ по кнопкам — назад/пауза/вперёд, ЛКМ+тянуть — двигать, тянуть за край — размер, ПКМ — выход.
+Значок «Вкусно — и точка» в углу — пасхалка: оранжевая тема и мем. Мимо панели клики проходят насквозь.
 Запуск: python3 tunepeek.py   |   проверка: python3 tunepeek.py --selftest
 """
 import math, os, sys, threading, urllib.request
@@ -17,6 +18,9 @@ BTN_Y, BTN_R = 48, 8
 BTNS = [('Previous', 10), ('PlayPause', 38), ('Next', 66)]  # x от левого края текста
 SHOW_MS, HOVER_OUT_MS = 5000, 1500
 BG_ALPHA, ART_ALPHA = 0.6, 0.9
+LOGO, LOGO_Y = 16, 6  # значок «Вкусно — и точка» в правом верхнем углу текста
+VK_GREEN, VK_ORANGE, VK_RED = (0.0, 0.36, 0.2), (1.0, 0.53, 0.13), (0.86, 0.16, 0.12)
+MEME, MEME_W, MEME_H, MEME_MS = 'Я хочу вкусно и точка, понимаете?', 236, 30, 4000
 PREFIX = 'org.mpris.MediaPlayer2.'
 SCALE_MIN, SCALE_MAX = 0.75, 2.0
 EDGE = 6  # px у края панели, за которые хватается ресайз
@@ -45,6 +49,14 @@ def resize_scale(s0, length, delta):
     return clamp_scale(s0 * (length + delta) / length)
 
 
+def vk_logo(cr, x, y, n):
+    """Упрощённый значок «Вкусно — и точка»: зелёная плашка, две оранжевые полоски, красная точка."""
+    rrect(cr, x, y, n, n, n / 4); cr.set_source_rgb(*VK_GREEN); cr.fill()
+    cr.set_source_rgb(*VK_ORANGE)
+    for py in (0.27, 0.6): rrect(cr, x + n * .17, y + n * py, n * .4, n * .16, n * .08); cr.fill()
+    cr.set_source_rgb(*VK_RED); cr.arc(x + n * .74, y + n * .5, n * .15, 0, 2 * math.pi); cr.fill()
+
+
 def rrect(cr, x, y, w, h, r):
     cr.new_sub_path()
     for cx, cy, a in ((x + w - r, y + r, -90), (x + w - r, y + h - r, 0), (x + r, y + h - r, 90), (x + r, y + r, 180)):
@@ -66,6 +78,7 @@ class Player(Gtk.Window):
         s.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
         s.proxies, s.cur, s.meta, s.status, s.track = {}, None, {}, '', None
         s.art_url, s.art, s.drag, s.resizing = None, None, None, None
+        s.vk, s.meme, s.meme_id = False, None, None
         s.k, s.target, s.anim_id, s.hide_id, s.hover = 0.0, 0.0, None, None, False
         s.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK | Gdk.EventMask.POINTER_MOTION_MASK
                      | Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK
@@ -144,22 +157,27 @@ class Player(Gtk.Window):
             return
         GLib.idle_add(lambda: url == s.art_url and (setattr(s, 'art', pb), s.queue_draw()) and False)
 
-    def text(s, cr, x, y, txt, font, alpha):
+    def text(s, cr, x, y, txt, font, alpha, w=W - CW - PAD):
         lay = PangoCairo.create_layout(cr)
         lay.set_font_description(Pango.FontDescription(font)); lay.set_text(txt, -1)
-        lay.set_width((W - CW - PAD) * Pango.SCALE); lay.set_ellipsize(Pango.EllipsizeMode.END)
+        lay.set_width(w * Pango.SCALE); lay.set_ellipsize(Pango.EllipsizeMode.END)
         cr.set_source_rgba(0.93, 0.94, 0.96, alpha); cr.move_to(x, y); PangoCairo.show_layout(cr, lay)
 
     def on_draw(s, w, cr):
         cr.set_operator(0); cr.paint(); cr.set_operator(2)  # CLEAR, потом OVER
         cr.scale(s.S, s.S)  # дальше всё рисуем в «единичных» координатах
         pw = panel_w(s.k); x0 = W - pw
-        rrect(cr, x0, 0, pw, H, 12); cr.set_source_rgba(0.13, 0.15, 0.19, BG_ALPHA); cr.fill()
+        rrect(cr, x0 + 1, 1, pw - 2, H - 2, 11)
+        cr.set_source_rgba(*VK_ORANGE, 0.92) if s.vk else cr.set_source_rgba(0.13, 0.15, 0.19, BG_ALPHA)
+        cr.fill_preserve()
+        cr.set_source_rgba(*VK_GREEN, 1) if s.vk else cr.set_source_rgba(1, 1, 1, 0.1)
+        cr.set_line_width(2 if s.vk else 1); cr.stroke()
         if pw > CW:
             # текст едет вместе с левым краем и прячется под обложку
             cr.save(); cr.rectangle(x0, 0, pw - CW, H); cr.clip()
             tx, a = x0 + PAD, s.k
-            s.text(cr, tx, 5, s.meta.get('xesam:title') or ('Без названия' if s.cur else 'Ничего не играет'), 'Sans Bold 10', a)
+            s.text(cr, tx, 5, s.meta.get('xesam:title') or ('Без названия' if s.cur else 'Ничего не играет'), 'Sans Bold 10', a, W - CW - PAD - LOGO - 6)
+            vk_logo(cr, x0 + W - CW - LOGO - 2, LOGO_Y, LOGO)
             s.text(cr, tx, 22, ', '.join(s.meta.get('xesam:artist') or []), 'Sans 8', 0.65 * a)
             src = s.cur[len(PREFIX):].split('.')[0] if s.cur else ''
             lay = PangoCairo.create_layout(cr); lay.set_font_description(Pango.FontDescription('Sans 7')); lay.set_text(src, -1)
@@ -187,10 +205,43 @@ class Player(Gtk.Window):
             cr.set_source_rgba(1, 1, 1, 0.08); cr.paint()
             s.text(cr, ax + 16, PAD + 10, '♪', 'Sans 16', 0.5)
         cr.restore()
+        if s.vk:
+            rrect(cr, ax, PAD, ART, ART, 8); cr.set_source_rgb(*VK_GREEN); cr.set_line_width(2); cr.stroke()
+
+    def toggle_vk(s):
+        s.vk = not s.vk; s.queue_draw()
+        if s.meme_id: GLib.source_remove(s.meme_id); s.meme_id = None
+        if not s.vk:
+            if s.meme: s.meme.hide()
+            return
+        if not s.meme:
+            s.meme = Gtk.Window(type=Gtk.WindowType.POPUP)
+            s.meme.set_visual(s.meme.get_screen().get_rgba_visual()); s.meme.set_app_paintable(True)
+            s.meme.connect('draw', s.draw_meme)
+        s.meme.resize(round(MEME_W * s.S), round(MEME_H * s.S)); s.place_meme(); s.meme.show_all()
+        s.meme.input_shape_combine_region(cairo.Region())  # клики проходят насквозь
+        s.meme_id = GLib.timeout_add(MEME_MS, lambda: (s.meme.hide(), setattr(s, 'meme_id', None)) and False)
+
+    def place_meme(s):
+        # облачко под панелью, по правому краю
+        if s.meme:
+            x, y = s.get_position()
+            s.meme.move(round(x + (W - MEME_W) * s.S), round(y + (H + 6) * s.S))
+
+    def draw_meme(s, w, cr):
+        cr.set_operator(0); cr.paint(); cr.set_operator(2); cr.scale(s.S, s.S)
+        rrect(cr, 1, 1, MEME_W - 2, MEME_H - 2, 10); cr.set_source_rgb(*VK_ORANGE); cr.fill_preserve()
+        cr.set_source_rgb(*VK_GREEN); cr.set_line_width(2); cr.stroke()
+        lay = PangoCairo.create_layout(cr); lay.set_font_description(Pango.FontDescription('Sans Bold 9')); lay.set_text(MEME, -1)
+        tw, th = lay.get_pixel_size()
+        cr.set_source_rgb(1, 1, 1); cr.move_to((MEME_W - tw) / 2, (MEME_H - th) / 2); PangoCairo.show_layout(cr, lay)
 
     def on_press(s, w, e):
         if e.button == 3: Gtk.main_quit(); return
         tx, ex, ey = W - panel_w(s.k) + PAD, e.x / s.S, e.y / s.S
+        lx = W - panel_w(s.k) + W - CW - LOGO - 2
+        if s.k > 0.9 and lx - 2 <= ex <= lx + LOGO + 2 and LOGO_Y - 2 <= ey <= LOGO_Y + LOGO + 2:
+            s.toggle_vk(); return
         for cmd, ox in BTNS:
             if s.k > 0.9 and s.cur and (ex - tx - ox) ** 2 + (ey - BTN_Y) ** 2 <= (BTN_R + 4) ** 2:
                 s.proxy(s.cur).call(cmd, None, 0, -1, None, None, None)
@@ -223,7 +274,7 @@ class Player(Gtk.Window):
             s.move(round(x), round(y0 + H * (s0 - s.S) if edge == 't' else y0))
             s.resize(round(W * s.S), round(H * s.S)); s.set_input(); s.queue_draw()
         elif s.drag:
-            s.move(int(e.x_root - s.drag[0]), int(e.y_root - s.drag[1]))
+            s.move(int(e.x_root - s.drag[0]), int(e.y_root - s.drag[1])); s.place_meme()
         else:
             edge = s.edge_at(e.x, e.y)
             s.get_window().set_cursor(Gdk.Cursor.new_from_name(s.get_display(), CURSORS[edge]) if edge else None)
