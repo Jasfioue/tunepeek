@@ -1,5 +1,8 @@
 # Tunepeek
 
+[![Скачать последнюю версию](https://img.shields.io/github/v/release/Jasfioue/tunepeek?style=for-the-badge&label=%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C&color=6d3fd1)](https://github.com/Jasfioue/tunepeek/releases/latest)
+[![Загрузки](https://img.shields.io/github/downloads/Jasfioue/tunepeek/total?style=for-the-badge&label=%D0%97%D0%B0%D0%B3%D1%80%D1%83%D0%B7%D0%BA%D0%B8)](https://github.com/Jasfioue/tunepeek/releases)
+
 Крошечная панель «что сейчас играет» поверх всех окон, даже поверх полноэкранных игр и видео.
 Видит YouTube и SoundCloud в браузере, Spotify, VLC: всё, что отдаёт системе информацию о треке.
 
@@ -31,7 +34,7 @@ python3 linux/tunepeek.py --selftest # самопроверка
 
 ## Windows (`windows/`)
 
-C# / WPF, данные берёт из медиа-сессий Windows (GSMTC). Готовый `Tunepeek.exe` лежит в Releases.
+C# / WPF, данные берёт из медиа-сессий Windows (GSMTC). Готовый `Tunepeek.exe` — в [последнем релизе](https://github.com/Jasfioue/tunepeek/releases/latest).
 При первом запуске копирует себя в `%LOCALAPPDATA%\Tunepeek` и добавляет себя в автозапуск (`HKCU\...\Run\Tunepeek`).
 Чтобы удалить: закройте панель (ПКМ), удалите эту папку и значение `Tunepeek` в автозапуске.
 
