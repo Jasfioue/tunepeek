@@ -1,6 +1,6 @@
 // Tunepeek — мини-плеер поверх всех окон: показывает, что играет (YouTube/SoundCloud в браузере, Spotify... — всё, что видит медиа-панель Windows).
 // Видна только обложка; на новом треке название выезжает на 5 с. Навести на обложку — раскрыть.
-// ЛКМ по кнопкам — назад/пауза/вперёд, ЛКМ+тянуть — двигать, колесо — размер, ПКМ — выход. Мимо панели клики проходят насквозь.
+// ЛКМ по кнопкам — назад/пауза/вперёд, ЛКМ+тянуть — двигать, тянуть за край — размер, ПКМ — выход. Мимо панели клики проходят насквозь.
 // Первый запуск копирует exe в %LOCALAPPDATA%\Tunepeek и прописывает автозапуск.
 using System;
 using System.Diagnostics;
@@ -51,7 +51,7 @@ class PlayerWindow : Window
 {
     const double W = 270, H = 64, ART = 48, PAD = 8, MARGIN = 16, CW = ART + 2 * PAD;
     const int SHOW_MS = 5000, HOVER_OUT_MS = 1500;
-    const double SCALE_MIN = 0.75, SCALE_MAX = 2;
+    const double SCALE_MIN = 0.75, SCALE_MAX = 2, EDGE = 6; // EDGE — px у края панели, за которые хватается ресайз
     static readonly RegistryKey settings = Registry.CurrentUser.CreateSubKey(@"Software\Tunepeek");
 
     MediaManager mgr;
@@ -64,6 +64,7 @@ class PlayerWindow : Window
     bool hover, busy;
     double scale = 1;
     Point? drag;
+    (char edge, double s0, Point p0, double left0, double top0, double len)? resizing;
 
     public PlayerWindow()
     {
@@ -110,11 +111,35 @@ class PlayerWindow : Window
         hideTimer.Tick += (_, _) => { hideTimer.Stop(); if (!hover) Animate(0); };
         MouseEnter += (_, _) => { hover = true; Expand(0); };
         MouseLeave += (_, _) => { hover = false; Expand(HOVER_OUT_MS); };
-        MouseLeftButtonDown += (_, e) => { drag = e.GetPosition(this); CaptureMouse(); };
-        MouseLeftButtonUp += (_, _) => { drag = null; ReleaseMouseCapture(); };
-        MouseMove += (_, e) => { if (drag is Point d) { var p = PointToScreenDip(e.GetPosition(this)); Left = p.X - d.X; Top = p.Y - d.Y; } };
+        MouseLeftButtonDown += (_, e) =>
+        {
+            var p = e.GetPosition(this);
+            var edge = EdgeAt(p);
+            if (edge == ' ') drag = p;
+            else resizing = (edge, scale, PointToScreenDip(p), Left, Top, (edge is 'l' or 'r' ? panel.ActualWidth : H) * scale);
+            CaptureMouse();
+        };
+        MouseLeftButtonUp += (_, _) =>
+        {
+            if (resizing != null) settings.SetValue("Scale", (int)Math.Round(scale * 100));
+            drag = null; resizing = null; ReleaseMouseCapture();
+        };
+        MouseMove += (_, e) =>
+        {
+            var p = e.GetPosition(this);
+            if (resizing is var (edge, s0, p0, left0, top0, len))
+            {
+                var q = PointToScreenDip(p);
+                var d = edge switch { 'l' => p0.X - q.X, 'r' => q.X - p0.X, 't' => p0.Y - q.Y, _ => q.Y - p0.Y };
+                SetScale(s0 * (len + d) / len);
+                // противоположный край стоит на месте; для верх/низ — правый край, как у всей панели
+                Left = left0 + (edge == 'r' ? W - panel.ActualWidth : W) * (s0 - scale);
+                Top = edge == 't' ? top0 + H * (s0 - scale) : top0;
+            }
+            else if (drag is Point d) { var s = PointToScreenDip(p); Left = s.X - d.X; Top = s.Y - d.Y; }
+            else Cursor = EdgeAt(p) switch { 'l' or 'r' => Cursors.SizeWE, 't' or 'b' => Cursors.SizeNS, _ => null };
+        };
         MouseRightButtonUp += (_, _) => Close();
-        MouseWheel += (_, e) => { SetScale(scale + Math.Sign(e.Delta) * 0.1); settings.SetValue("Scale", (int)Math.Round(scale * 100)); };
 
         SourceInitialized += (_, _) =>
         {
@@ -131,6 +156,12 @@ class PlayerWindow : Window
             t.Tick += async (_, _) => await Poll();
             t.Start();
         };
+    }
+
+    char EdgeAt(Point p)
+    {
+        var x0 = (W - panel.ActualWidth) * scale;
+        return p.X - x0 < EDGE ? 'l' : Width - p.X < EDGE ? 'r' : p.Y < EDGE ? 't' : Height - p.Y < EDGE ? 'b' : ' ';
     }
 
     void SetScale(double s)

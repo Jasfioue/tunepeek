@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tunepeek — мини-плеер поверх всех окон: показывает, что играет (YouTube/SoundCloud в браузере, Spotify, VLC... — всё, что говорит MPRIS).
 Видна только обложка; на новом треке название выезжает на 5 с. Навести на обложку — раскрыть.
-ЛКМ по кнопкам — назад/пауза/вперёд, ЛКМ+тянуть — двигать, колесо — размер, ПКМ — выход. Мимо панели клики проходят насквозь.
+ЛКМ по кнопкам — назад/пауза/вперёд, ЛКМ+тянуть — двигать, тянуть за край — размер, ПКМ — выход. Мимо панели клики проходят насквозь.
 Запуск: python3 tunepeek.py   |   проверка: python3 tunepeek.py --selftest
 """
 import math, os, sys, threading, urllib.request
@@ -19,6 +19,8 @@ SHOW_MS, HOVER_OUT_MS = 5000, 1500
 BG_ALPHA, ART_ALPHA = 0.6, 0.9
 PREFIX = 'org.mpris.MediaPlayer2.'
 SCALE_MIN, SCALE_MAX = 0.75, 2.0
+EDGE = 6  # px у края панели, за которые хватается ресайз
+CURSORS = {'l': 'ew-resize', 'r': 'ew-resize', 't': 'ns-resize', 'b': 'ns-resize'}
 SCALE_FILE = os.path.join(GLib.get_user_config_dir(), 'tunepeek-scale')
 
 
@@ -36,6 +38,11 @@ def panel_w(k):
 
 def clamp_scale(v):
     return round(min(SCALE_MAX, max(SCALE_MIN, v)), 2)
+
+
+def resize_scale(s0, length, delta):
+    """Край панели длиной length (px, масштаб s0) утянули на delta px -> новый масштаб, край идёт за курсором."""
+    return clamp_scale(s0 * (length + delta) / length)
 
 
 def rrect(cr, x, y, w, h, r):
@@ -58,14 +65,14 @@ class Player(Gtk.Window):
         s.move(geo.x + geo.width - W * s.S - MARGIN, geo.y + MARGIN)
         s.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
         s.proxies, s.cur, s.meta, s.status, s.track = {}, None, {}, '', None
-        s.art_url, s.art, s.drag = None, None, None
+        s.art_url, s.art, s.drag, s.resizing = None, None, None, None
         s.k, s.target, s.anim_id, s.hide_id, s.hover = 0.0, 0.0, None, None, False
         s.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK | Gdk.EventMask.POINTER_MOTION_MASK
                      | Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK
-                     | Gdk.EventMask.SCROLL_MASK)
+)
         s.connect('draw', s.on_draw); s.connect('button-press-event', s.on_press)
-        s.connect('button-release-event', lambda *a: setattr(s, 'drag', None))
-        s.connect('motion-notify-event', s.on_motion); s.connect('scroll-event', s.on_scroll)
+        s.connect('button-release-event', s.on_release)
+        s.connect('motion-notify-event', s.on_motion)
         s.connect('enter-notify-event', lambda *a: (setattr(s, 'hover', True), s.expand(None)))
         s.connect('leave-notify-event', lambda *a: (setattr(s, 'hover', False), s.expand(HOVER_OUT_MS)))
         s.poll(); GLib.timeout_add(1000, s.poll)
@@ -189,20 +196,37 @@ class Player(Gtk.Window):
                 s.proxy(s.cur).call(cmd, None, 0, -1, None, None, None)
                 GLib.timeout_add(200, lambda: s.poll() and False)
                 return
-        s.drag = (e.x, e.y)
+        edge = s.edge_at(e.x, e.y)
+        if edge:
+            length = (panel_w(s.k) if edge in 'lr' else H) * s.S
+            s.resizing = (edge, s.S, e.x_root, e.y_root, *s.get_position(), length)
+        else:
+            s.drag = (e.x, e.y)
+
+    def on_release(s, w, e):
+        if s.resizing:
+            try: open(SCALE_FILE, 'w').write(str(s.S))
+            except OSError: pass
+        s.drag = s.resizing = None
+
+    def edge_at(s, x, y):
+        x0, w, h = (W - panel_w(s.k)) * s.S, W * s.S, H * s.S
+        return 'l' if x - x0 < EDGE else 'r' if w - x < EDGE else 't' if y < EDGE else 'b' if h - y < EDGE else None
 
     def on_motion(s, w, e):
-        if s.drag: s.move(int(e.x_root - s.drag[0]), int(e.y_root - s.drag[1]))
-
-    def on_scroll(s, w, e):
-        d = {Gdk.ScrollDirection.UP: 0.1, Gdk.ScrollDirection.DOWN: -0.1}.get(e.direction, 0)
-        new = clamp_scale(s.S + d)
-        if new == s.S: return
-        x, y = s.get_position()
-        s.move(x + round(W * (s.S - new)), y)  # правый край стоит на месте
-        s.S = new; s.resize(round(W * new), round(H * new)); s.set_input(); s.queue_draw()
-        try: open(SCALE_FILE, 'w').write(str(new))
-        except OSError: pass
+        if s.resizing:
+            edge, s0, px, py, x0, y0, length = s.resizing
+            d = {'l': px - e.x_root, 'r': e.x_root - px, 't': py - e.y_root, 'b': e.y_root - py}[edge]
+            s.S = resize_scale(s0, length, d)
+            # противоположный край стоит на месте; для верх/низ — правый край, как у всей панели
+            x = x0 + (W - panel_w(s.k) if edge == 'r' else W) * (s0 - s.S)
+            s.move(round(x), round(y0 + H * (s0 - s.S) if edge == 't' else y0))
+            s.resize(round(W * s.S), round(H * s.S)); s.set_input(); s.queue_draw()
+        elif s.drag:
+            s.move(int(e.x_root - s.drag[0]), int(e.y_root - s.drag[1]))
+        else:
+            edge = s.edge_at(e.x, e.y)
+            s.get_window().set_cursor(Gdk.Cursor.new_from_name(s.get_display(), CURSORS[edge]) if edge else None)
 
 
 if __name__ == '__main__':
@@ -211,6 +235,7 @@ if __name__ == '__main__':
         assert pick([('a', 'Paused'), ('b', 'Playing')], 'a') == 'b'
         assert pick([('a', 'Playing'), ('b', 'Playing')], 'b') == 'b'
         assert pick([('a', 'Stopped'), ('b', 'Paused')], None) == 'b'
+        assert resize_scale(1, 100, 50) == 1.5 and resize_scale(1, 100, -90) == SCALE_MIN and resize_scale(2, 100, 10) == SCALE_MAX
         assert clamp_scale(5) == SCALE_MAX and clamp_scale(0.1) == SCALE_MIN and clamp_scale(1.1) == 1.1
         assert panel_w(0) == CW and panel_w(1) == W and CW < panel_w(0.5) < W
         print('ok'); sys.exit()
