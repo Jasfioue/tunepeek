@@ -86,9 +86,8 @@ class Player(Gtk.Window):
         names = [n for n in names if n.startswith(PREFIX)]
         for gone in set(s.proxies) - set(names): del s.proxies[gone]
         s.cur = pick([(n, s.prop(n, 'PlaybackStatus')) for n in names], s.cur)
-        if not s.cur:
-            s.hide(); return True
-        s.meta, s.status = s.prop(s.cur, 'Metadata') or {}, s.prop(s.cur, 'PlaybackStatus') or ''
+        # ничего не играет — панель всё равно видна, иначе после запуска кажется, что плеер не открылся
+        s.meta, s.status = (s.prop(s.cur, 'Metadata') or {}, s.prop(s.cur, 'PlaybackStatus') or '') if s.cur else ({}, '')
         url = s.meta.get('mpris:artUrl')
         if url != s.art_url:
             s.art_url, s.art = url, None
@@ -153,14 +152,14 @@ class Player(Gtk.Window):
             # текст едет вместе с левым краем и прячется под обложку
             cr.save(); cr.rectangle(x0, 0, pw - CW, H); cr.clip()
             tx, a = x0 + PAD, s.k
-            s.text(cr, tx, 5, s.meta.get('xesam:title') or 'Без названия', 'Sans Bold 10', a)
+            s.text(cr, tx, 5, s.meta.get('xesam:title') or ('Без названия' if s.cur else 'Ничего не играет'), 'Sans Bold 10', a)
             s.text(cr, tx, 22, ', '.join(s.meta.get('xesam:artist') or []), 'Sans 8', 0.65 * a)
             src = s.cur[len(PREFIX):].split('.')[0] if s.cur else ''
             lay = PangoCairo.create_layout(cr); lay.set_font_description(Pango.FontDescription('Sans 7')); lay.set_text(src, -1)
             cr.set_source_rgba(1, 1, 1, 0.35 * a); cr.move_to(tx + W - CW - PAD - lay.get_pixel_size()[0], BTN_Y - 5)
             PangoCairo.show_layout(cr, lay)
             cr.set_source_rgba(0.93, 0.94, 0.96, 0.9 * a)
-            for cmd, ox in BTNS:
+            for cmd, ox in BTNS if s.cur else []:
                 bx = tx + ox
                 if cmd == 'PlayPause' and s.status == 'Playing':
                     cr.rectangle(bx - 4, BTN_Y - 5, 3, 10); cr.rectangle(bx + 1, BTN_Y - 5, 3, 10)
@@ -215,4 +214,9 @@ if __name__ == '__main__':
         assert clamp_scale(5) == SCALE_MAX and clamp_scale(0.1) == SCALE_MIN and clamp_scale(1.1) == 1.1
         assert panel_w(0) == CW and panel_w(1) == W and CW < panel_w(0.5) < W
         print('ok'); sys.exit()
+    # второй запуск (двойной клик по ярлыку) молча выходит: имя на шине уже занято первым
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+    if bus.call_sync('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'RequestName',
+                     GLib.Variant('(su)', ('io.github.tunepeek', 4)), GLib.VariantType('(u)'), 0, -1, None).unpack()[0] != 1:
+        sys.exit()
     Player(); Gtk.main()

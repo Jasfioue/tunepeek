@@ -58,7 +58,7 @@ class PlayerWindow : Window
     Session cur;
     string curId, track;
     readonly Border panel, art;
-    readonly Canvas content;
+    readonly Canvas content, buttons = new();
     readonly TextBlock title, artist, source, playBtn;
     readonly DispatcherTimer hideTimer = new();
     bool hover, busy;
@@ -84,6 +84,7 @@ class PlayerWindow : Window
         Canvas.SetLeft(artist, PAD); Canvas.SetTop(artist, 22);
         Canvas.SetLeft(source, PAD); Canvas.SetTop(source, 41);
         content.Children.Add(title); content.Children.Add(artist); content.Children.Add(source);
+        content.Children.Add(buttons);
         double x = PAD;
         foreach (var (glyph, act) in new (string, Func<Session, Task>)[] {
             ("", s => s.TrySkipPreviousAsync().AsTask()), ("", s => s.TryTogglePlayPauseAsync().AsTask()),
@@ -92,7 +93,7 @@ class PlayerWindow : Window
             var b = new TextBlock { Text = glyph, FontFamily = new FontFamily("Segoe MDL2 Assets"), FontSize = 13,
                                     Foreground = title.Foreground, Background = Brushes.Transparent, Padding = new Thickness(4), Cursor = Cursors.Hand };
             b.MouseLeftButtonDown += async (_, e) => { e.Handled = true; if (cur != null) { await act(cur); await Task.Delay(200); await Poll(); } };
-            Canvas.SetLeft(b, x - 4); Canvas.SetTop(b, 38); content.Children.Add(b);
+            Canvas.SetLeft(b, x - 4); Canvas.SetTop(b, 38); buttons.Children.Add(b);
             if (glyph == "") playBtn = b;
             x += 28;
         }
@@ -155,7 +156,14 @@ class PlayerWindow : Window
             var sessions = mgr.GetSessions();
             curId = Picker.Pick(sessions.Select(s => (s.SourceAppUserModelId, s.GetPlaybackInfo().PlaybackStatus.ToString())).ToList(), curId);
             cur = sessions.FirstOrDefault(s => s.SourceAppUserModelId == curId);
-            if (cur == null) { Hide(); return; }
+            if (cur == null)
+            {
+                // ничего не играет — панель всё равно видна, иначе после запуска кажется, что плеер не открылся
+                if (track != "") { track = ""; title.Text = "Ничего не играет"; artist.Text = source.Text = ""; SetArt(null); buttons.Visibility = Visibility.Hidden; Expand(SHOW_MS); }
+                if (!IsVisible) Show();
+                return;
+            }
+            buttons.Visibility = Visibility.Visible;
             var playing = cur.GetPlaybackInfo().PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
             playBtn.Text = playing ? "" : "";
             var props = await cur.TryGetMediaPropertiesAsync();
@@ -166,8 +174,7 @@ class PlayerWindow : Window
                 title.Text = string.IsNullOrEmpty(props.Title) ? "Без названия" : props.Title;
                 artist.Text = props.Artist;
                 source.Text = Path.GetFileNameWithoutExtension(curId.Split('!').Last());
-                art.Background = await LoadArt(props.Thumbnail) ?? new SolidColorBrush(Color.FromArgb(20, 255, 255, 255));
-                ((TextBlock)art.Child).Visibility = art.Background is ImageBrush ? Visibility.Collapsed : Visibility.Visible;
+                SetArt(await LoadArt(props.Thumbnail));
                 Expand(SHOW_MS);
             }
             if (!IsVisible) Show();
@@ -176,6 +183,12 @@ class PlayerWindow : Window
         }
         catch (COMException) { } // сессия закрылась посреди опроса — следующий тик разберётся
         finally { busy = false; }
+    }
+
+    void SetArt(Brush b)
+    {
+        art.Background = b ?? new SolidColorBrush(Color.FromArgb(20, 255, 255, 255));
+        ((TextBlock)art.Child).Visibility = b == null ? Visibility.Visible : Visibility.Collapsed;
     }
 
     static async Task<Brush> LoadArt(Windows.Storage.Streams.IRandomAccessStreamReference thumb)
